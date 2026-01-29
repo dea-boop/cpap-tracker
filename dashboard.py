@@ -34,27 +34,24 @@ df = load_data()
 if df.empty:
     st.warning("No data found yet. The tracker is running...")
 else:
-    # 1. Fix Timestamps & SKUs
+    # 1. Simple Load (No Timezone Shifting)
     df['timestamp'] = pd.to_datetime(df['timestamp'], format='mixed')
     df['sku'] = df['sku'].astype(str)
     df = df.sort_values('timestamp')
 
     # --- SIDEBAR FILTERS ---
     st.sidebar.header("Filters")
-    
     available_sites = df['site'].unique()
     selected_site = st.sidebar.selectbox("Select Competitor", available_sites, index=0)
     
     site_df = df[df['site'] == selected_site].copy()
-
     show_favs = st.sidebar.checkbox("⭐ Show Favorites Only")
     
     all_products = sorted(site_df['product_name'].unique())
     
-    # Filter Logic
     if show_favs:
         fav_products = site_df[site_df['sku'].isin(FAVORITE_SKUS)]['product_name'].unique()
-        options_list = all_products # Keep all visible in dropdown if needed
+        options_list = all_products
         default_selection = list(fav_products)
     else:
         default_selection = all_products[:5]
@@ -62,7 +59,6 @@ else:
 
     selected_products = st.sidebar.multiselect("Select Products", options_list, default=default_selection)
 
-    # Apply Filter
     if selected_products:
         filtered_df = site_df[site_df['product_name'].isin(selected_products)]
     else:
@@ -89,14 +85,13 @@ else:
         else:
             st.info("No matching products found.")
 
-    # --- TAB 2: MOVERS (UPDATED LOGIC) ---
+    # --- TAB 2: MOVERS ---
     with tab2:
         st.subheader(f"Inventory Changes - {selected_site}")
         
         report_data = []
         products_to_check = site_df['product_name'].unique()
         
-        # Time Reference Points
         now = df['timestamp'].max()
         midnight_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         midnight_yesterday = midnight_today - timedelta(days=1)
@@ -106,48 +101,34 @@ else:
             p_data = site_df[site_df['product_name'] == product].sort_values('timestamp')
             if p_data.empty: continue
             
-            # 1. Current Stock (Latest)
             current_stock = p_data.iloc[-1]['stock_count']
             current_sku = p_data.iloc[-1]['sku']
 
-            # 2. Stock at Start of Today (Midnight)
-            # Find the last record BEFORE or AT midnight today. 
-            # If no record exists before midnight today, we use the FIRST record of today.
+            # Today Open
             recs_before_today = p_data[p_data['timestamp'] <= midnight_today]
             if not recs_before_today.empty:
                 stock_today_open = recs_before_today.iloc[-1]['stock_count']
             else:
-                # If they started tracking at 10am today, "Start of Day" is that 10am record.
                 stock_today_open = p_data.iloc[0]['stock_count']
             
-            # 3. Stock at Start of Yesterday (Midnight Yesterday)
+            # Yesterday Open
             recs_before_yesterday = p_data[p_data['timestamp'] <= midnight_yesterday]
             if not recs_before_yesterday.empty:
                 stock_yesterday_open = recs_before_yesterday.iloc[-1]['stock_count']
             else:
-                # If data doesn't go back that far, "Yesterday's Change" is N/A or 0
                 stock_yesterday_open = None
 
-            # 4. Stock 7 Days Ago
-            # logic: If we have data > 7 days, take that.
-            # If NOT, take the OLDEST record available (start of tracking).
+            # 7 Days Ago
             recs_7d = p_data[p_data['timestamp'] <= seven_days_ago]
             if not recs_7d.empty:
                 stock_7d = recs_7d.iloc[-1]['stock_count']
             else:
                 stock_7d = p_data.iloc[0]['stock_count']
 
-            # Calculations
             change_today = current_stock - stock_today_open
-            
-            if stock_yesterday_open is not None:
-                change_yesterday = stock_today_open - stock_yesterday_open
-            else:
-                change_yesterday = 0 # or None
-
+            change_yesterday = (stock_today_open - stock_yesterday_open) if stock_yesterday_open is not None else 0
             change_7d = current_stock - stock_7d
             
-            # Filter Logic (Show favorites or selected)
             is_fav = str(current_sku) in FAVORITE_SKUS
             should_show = (not show_favs and (not selected_products or product in selected_products)) or \
                           (show_favs and is_fav)
@@ -165,7 +146,6 @@ else:
         change_df = pd.DataFrame(report_data)
         
         if not change_df.empty:
-            # Sort by Today's Change (Biggest drops first)
             change_df = change_df.sort_values("Today's Change", ascending=True)
             st.dataframe(change_df, use_container_width=True)
         else:

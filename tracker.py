@@ -9,6 +9,7 @@ import re
 
 # --- CONFIGURATION ---
 DB_NAME = "inventory.db"
+# FORCE VANCOUVER TIME
 MY_TIMEZONE = pytz.timezone('US/Pacific')
 
 # Site A: CPAP Outlet
@@ -17,7 +18,6 @@ SITE_A_COLLECTION = "https://www.cpapoutlet.ca/collections/all"
 
 # Site B: Airvoel
 SITE_B_BASE = "https://airvoel.ca"
-# Your Token (Hardcoded)
 AIRVOEL_TOKEN = "d13c4ed1a6015418d712cc6bf6cd8cba"
 
 HEADERS = {
@@ -39,7 +39,6 @@ def init_db():
             stock_count INTEGER
         )
     ''')
-    # Auto-Migration
     c.execute("PRAGMA table_info(inventory_log)")
     columns = [info[1] for info in c.fetchall()]
     if 'site' not in columns:
@@ -50,7 +49,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- SITE A: CPAP OUTLET (HTML Scraper) ---
+# --- SITE A: CPAP OUTLET ---
 def get_cpap_urls():
     product_urls = set()
     page = 1
@@ -111,10 +110,9 @@ def scan_cpap_outlet(run_time, conn):
         except Exception: pass
     print(f"  CPAP Outlet: Saved {items_added} records.")
 
-# --- SITE B: AIRVOEL (GraphQL Pagination) ---
+# --- SITE B: AIRVOEL ---
 def scan_airvoel(run_time, conn):
     print("--- Scanning Airvoel ---")
-    
     c = conn.cursor()
     items_added = 0
     
@@ -123,7 +121,6 @@ def scan_airvoel(run_time, conn):
     headers['X-Shopify-Storefront-Access-Token'] = AIRVOEL_TOKEN
     headers['Content-Type'] = 'application/json'
 
-    # The Query: Gets products in batches of 250
     query = """
     query GetCollection($cursor: String) {
       products(first: 250, after: $cursor) {
@@ -156,30 +153,20 @@ def scan_airvoel(run_time, conn):
         try:
             payload = {'query': query, 'variables': {'cursor': cursor}}
             r = requests.post(gql_url, json=payload, headers=headers)
-            
-            if r.status_code != 200:
-                print(f"  ❌ Error: API returned {r.status_code}")
-                print(r.text)
-                break
-                
+            if r.status_code != 200: break
             data = r.json().get('data', {}).get('products', {})
             products = data.get('nodes', [])
-            
-            if not products:
-                print("  No products found in response.")
-                break
+            if not products: break
 
             for p in products:
                 title = p.get('title')
                 handle = p.get('handle')
                 url = f"{SITE_B_BASE}/products/{handle}"
-                
                 for v in p.get('variants', {}).get('nodes', []):
                     v_title = v.get('title')
                     sku = v.get('sku') or "N/A"
                     qty = v.get('quantityAvailable')
                     vid = v.get('id', '').split('/')[-1]
-                    
                     full_name = f"{title} ({v_title})" if v_title != 'Default Title' else title
                     
                     if qty is not None:
@@ -188,19 +175,15 @@ def scan_airvoel(run_time, conn):
                                      (run_time, "Airvoel", full_name, sku, url, vid, qty))
                         items_added += 1
 
-            # Setup for next page
             has_next_page = data.get('pageInfo', {}).get('hasNextPage', False)
             cursor = data.get('pageInfo', {}).get('endCursor')
             page_num += 1
-            time.sleep(1) # Be polite
-
-        except Exception as e:
-            print(f"  ❌ Crash on page {page_num}: {e}")
-            break
-
+            time.sleep(1)
+        except Exception: break
     print(f"  Airvoel: Scan Complete. Saved {items_added} records.")
 
 def job():
+    # Force Pacific Time here
     run_time = datetime.now(MY_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')
     print(f"\n[{run_time}] Starting Global Scan...")
     conn = sqlite3.connect(DB_NAME)
