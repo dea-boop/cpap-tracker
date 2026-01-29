@@ -8,111 +8,111 @@ from datetime import datetime
 DB_NAME = "inventory.db"
 MY_TIMEZONE = pytz.timezone('US/Pacific')
 
-st.set_page_config(page_title="CPAP Inventory Tracker", layout="wide")
+st.set_page_config(page_title="Inventory Tracker", layout="wide")
 
 def load_data():
     try:
         conn = sqlite3.connect(DB_NAME)
-        # We select SKU as well now
         df = pd.read_sql_query("SELECT * FROM inventory_log", conn)
         conn.close()
         return df
     except Exception:
         return pd.DataFrame()
 
-st.title("📊 CPAP Outlet Inventory Tracker")
+st.title("📊 Multi-Store Inventory Tracker")
 
 # Load Data
 df = load_data()
 
 if df.empty:
-    st.warning("Database is empty. The tracker hasn't saved any data yet.")
-else:
-    # Process Data
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
-    
-    # --- SIDEBAR FILTERS ---
-    st.sidebar.header("Filters")
-    
-    # Date Picker
-    selected_date = st.sidebar.date_input("Select Date", datetime.now(MY_TIMEZONE).date())
-    
-    # Search Box (Filters by Name or SKU)
-    search_term = st.sidebar.text_input("🔍 Search (SKU or Name)", "")
+    st.warning("Database is empty. Waiting for data...")
+    st.stop()
 
-    # Apply Search Filter to the main dataframe
-    if search_term:
-        # Filter if SKU or Product Name contains the search term (case insensitive)
-        df = df[
-            df['product_name'].str.contains(search_term, case=False, na=False) | 
-            df['sku'].str.contains(search_term, case=False, na=False)
-        ]
+# Pre-process
+df['timestamp'] = pd.to_datetime(df['timestamp'])
+if 'site' not in df.columns:
+    df['site'] = 'CPAP Outlet' # Fallback for old data
 
-    # Show Raw Data Stats
-    st.markdown(f"**Total Scans Recorded:** {len(df)}")
-    st.markdown(f"**Unique Products Tracked:** {df['product_url'].nunique()}")
+# --- TABS FOR SITES ---
+sites = df['site'].unique()
+# Ensure we have tabs even if data is missing for one
+all_sites = ["CPAP Outlet", "Airvoel"]
+tabs = st.tabs(all_sites)
 
-    # Sort and Calculate Sales (Diff)
-    # We sort by URL/Variant to track changes over time
-    df = df.sort_values(by=['product_url', 'variant_id', 'timestamp'])
-    df['diff'] = df.groupby(['product_url', 'variant_id'])['stock_count'].diff()
-    
-    # Filter for Sales (Negative drops only)
-    sales_df = df[df['diff'] < 0].copy()
-    
-    if not sales_df.empty:
-        sales_df['sales_count'] = sales_df['diff'].abs()
-        sales_df['date'] = sales_df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(MY_TIMEZONE).dt.date
+for i, site_name in enumerate(all_sites):
+    with tabs[i]:
+        # Filter data for this specific site
+        site_df = df[df['site'] == site_name].copy()
         
-        # Filter sales by the selected date
-        daily_sales = sales_df[sales_df['date'] == selected_date]
-        
-        # -- METRICS ROW --
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Total Items Sold Today", int(daily_sales['sales_count'].sum()) if not daily_sales.empty else 0)
-        with col2:
-            st.metric("Unique Products Sold", daily_sales['product_name'].nunique() if not daily_sales.empty else 0)
+        if site_df.empty:
+            st.info(f"No data found for {site_name} yet.")
+            continue
 
-        # -- TOP SELLING TABLE --
-        st.markdown(f"### 📦 Sales for {selected_date}")
-        if not daily_sales.empty:
-            # Group by product AND SKU to sum sales
-            report = daily_sales.groupby(['product_name', 'sku'])['sales_count'].sum().reset_index()
-            report = report.sort_values(by='sales_count', ascending=False)
+        # --- Sidebar Controls (Unique Key per tab to prevent conflict) ---
+        col_filters_1, col_filters_2 = st.columns(2)
+        with col_filters_1:
+            date_key = f"date_{site_name}"
+            selected_date = st.date_input(f"Select Date ({site_name})", datetime.now(MY_TIMEZONE).date(), key=date_key)
+        
+        with col_filters_2:
+            search_key = f"search_{site_name}"
+            search_term = st.text_input(f"🔍 Search SKU/Name", "", key=search_key)
+
+        # Apply Search
+        if search_term:
+            site_df = site_df[
+                site_df['product_name'].str.contains(search_term, case=False, na=False) | 
+                site_df['sku'].str.contains(search_term, case=False, na=False)
+            ]
+
+        # Calculate Sales
+        site_df = site_df.sort_values(by=['product_url', 'variant_id', 'timestamp'])
+        site_df['diff'] = site_df.groupby(['product_url', 'variant_id'])['stock_count'].diff()
+        
+        sales_df = site_df[site_df['diff'] < 0].copy()
+        
+        if not sales_df.empty:
+            sales_df['sales_count'] = sales_df['diff'].abs()
+            sales_df['date'] = sales_df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(MY_TIMEZONE).dt.date
             
-            # Display Table with SKU column
-            st.dataframe(
-                report, 
-                column_config={
-                    "product_name": "Product Name",
-                    "sku": "SKU",
-                    "sales_count": st.column_config.NumberColumn("Items Sold", format="%d")
-                },
-                use_container_width=True,
-                hide_index=True
-            )
-        else:
-            st.info(f"No sales detected yet for {selected_date} (Wait for the next hourly scan!)")
-    else:
-        st.info("No sales detected yet. (This is normal! We need at least 2 scans to calculate drops.)")
+            daily_sales = sales_df[sales_df['date'] == selected_date]
+            
+            # Metrics
+            c1, c2 = st.columns(2)
+            c1.metric("Items Sold", int(daily_sales['sales_count'].sum()) if not daily_sales.empty else 0)
+            c2.metric("Unique Products", daily_sales['product_name'].nunique() if not daily_sales.empty else 0)
 
-    st.markdown("---")
-    st.markdown("### 📈 Latest Inventory Checks (Raw Data)")
-    
-    # Show the raw log with the SKU column
-    display_df = df.sort_values(by='timestamp', ascending=False)
-    
-    st.dataframe(
-        display_df,
-        column_config={
-            "timestamp": st.column_config.DatetimeColumn("Time Scanned", format="D MMM, HH:mm"),
-            "product_name": "Product Name",
-            "sku": "SKU",
-            "stock_count": "Stock Level",
-            "product_url": st.column_config.LinkColumn("Product Link")
-        },
-        use_container_width=True,
-        hide_index=True
-    )
-    
+            # Sales Table
+            st.markdown(f"### 📦 Sales for {selected_date}")
+            if not daily_sales.empty:
+                report = daily_sales.groupby(['product_name', 'sku'])['sales_count'].sum().reset_index()
+                report = report.sort_values(by='sales_count', ascending=False)
+                
+                st.dataframe(
+                    report, 
+                    column_config={
+                        "product_name": "Product",
+                        "sku": "SKU",
+                        "sales_count": st.column_config.NumberColumn("Sold", format="%d")
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
+        else:
+            st.info("No sales detected yet.")
+
+        st.markdown("---")
+        st.markdown("### 📈 Live Inventory")
+        
+        # Show latest stock
+        latest_stock = site_df.sort_values('timestamp', ascending=False).drop_duplicates(subset=['product_url', 'variant_id'])
+        
+        st.dataframe(
+            latest_stock[['timestamp', 'product_name', 'sku', 'stock_count', 'product_url']],
+            column_config={
+                "timestamp": st.column_config.DatetimeColumn("Last Check", format="HH:mm"),
+                "product_url": st.column_config.LinkColumn("Link")
+            },
+            use_container_width=True,
+            hide_index=True
+        )
