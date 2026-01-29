@@ -8,8 +8,6 @@ from datetime import datetime, timedelta
 DB_NAME = "inventory.db"
 
 # --- FAVORITES (Pinned Products) ---
-# Add partial names of products you want to watch closely here.
-# The sidebar will have a checkbox to show ONLY these items.
 FAVORITES = [
     "AirSense",
     "AirCurve",
@@ -56,10 +54,8 @@ else:
     
     # Filter list if Favorites is checked
     if show_favs:
-        # Filter products that match any string in the FAVORITES list (case insensitive)
         default_selection = [p for p in all_products if any(f.lower() in p.lower() for f in FAVORITES)]
     else:
-        # Default to top 5 products if not filtering
         default_selection = all_products[:5]
 
     selected_products = st.sidebar.multiselect("Select Products", all_products, default=default_selection)
@@ -94,11 +90,7 @@ else:
     with tab2:
         st.subheader(f"Stock Changes (Last 7 Days) - {selected_site}")
         
-        # Logic to calculate changes
-        # We need the Latest Stock, Stock 24h ago, and Stock 7d ago for every product
         report_data = []
-        
-        # Get list of unique products for this site
         products_to_check = site_df['product_name'].unique()
         
         now = df['timestamp'].max()
@@ -112,42 +104,34 @@ else:
             # Get latest stock
             current_stock = p_data.iloc[-1]['stock_count']
             
-            # Get stock ~24h ago (find closest timestamp)
-            # We filter for records before the cutoff, then take the last one
+            # Get stock ~24h ago
             past_24h = p_data[p_data['timestamp'] <= one_day_ago]
             stock_24h = past_24h.iloc[-1]['stock_count'] if not past_24h.empty else current_stock
             
             # Get stock ~7d ago
             past_7d = p_data[p_data['timestamp'] <= seven_days_ago]
-            stock_7d = past_7d.iloc[-1]['stock_count'] if not past_7d.empty else stock_24h # Fallback to 24h if 7d not avail
+            stock_7d = past_7d.iloc[-1]['stock_count'] if not past_7d.empty else stock_24h
             
             change_24h = current_stock - stock_24h
             change_7d = current_stock - stock_7d
             
-            # Only add to list if selected in sidebar (or if user wants to see all)
-            # For this table, let's show ALL products unless the list is huge, 
-            # but respecting the "Selected Products" makes it cleaner.
+            # Only add to list if selected (or all if none selected)
             if not selected_products or product in selected_products:
                 report_data.append({
                     "Product": product,
                     "Current Stock": current_stock,
-                    "24h Change": change_24h,
-                    "7d Change": change_7d
+                    "24h Change": int(change_24h),
+                    "7d Change": int(change_7d)
                 })
         
-        # Create Dataframe
         change_df = pd.DataFrame(report_data)
         
         if not change_df.empty:
             # Sort by biggest absolute change in 24h
             change_df = change_df.sort_values("24h Change", ascending=True)
             
-            # Styling function to highlight drops in red
-            def color_negative_red(val):
-                color = 'red' if val < 0 else 'green' if val > 0 else 'black'
-                return f'color: {color}'
-
-            st.dataframe(change_df.style.applymap(color_negative_red, subset=['24h Change', '7d Change']))
+            # Use standard dataframe (No styling to prevent crash)
+            st.dataframe(change_df, use_container_width=True)
         else:
             st.info("Not enough data history to calculate changes yet.")
 
