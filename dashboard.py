@@ -7,14 +7,17 @@ from datetime import datetime, timedelta
 # --- CONFIGURATION ---
 DB_NAME = "inventory.db"
 
-# --- FAVORITES (Pinned Products) ---
-FAVORITES = [
-    "AirSense",
-    "AirCurve",
-    "DreamStation",
-    "Mask",
-    "P10",
-    "F20"
+# --- FAVORITES (Pinned SKUs) ---
+# The dashboard will look for these EXACT SKUs when you check the "Favorites" box.
+FAVORITE_SKUS = [
+    "39007",   # AirSense 11
+    "38113",   # AirMini
+    "62900",   # AirFit P10
+    "63801",   # AirFit F20
+    "63850",
+    "506001",
+    "37403",
+    "37382"
 ]
 
 st.set_page_config(page_title="CPAP Inventory Tracker", layout="wide")
@@ -32,8 +35,9 @@ df = load_data()
 if df.empty:
     st.warning("No data found yet. The tracker is running...")
 else:
-    # 1. Fix Timestamps
+    # 1. Fix Timestamps & Ensure SKUs are strings for matching
     df['timestamp'] = pd.to_datetime(df['timestamp'], format='mixed')
+    df['sku'] = df['sku'].astype(str)  
     df = df.sort_values('timestamp')
 
     # --- SIDEBAR FILTERS ---
@@ -52,13 +56,21 @@ else:
     # Product Selector logic
     all_products = sorted(site_df['product_name'].unique())
     
-    # Filter list if Favorites is checked
+    # --- LOGIC UPDATE: Filter by SKU ---
     if show_favs:
-        default_selection = [p for p in all_products if any(f.lower() in p.lower() for f in FAVORITES)]
+        # Find product names that match the Favorite SKUs
+        fav_products = site_df[site_df['sku'].isin(FAVORITE_SKUS)]['product_name'].unique()
+        default_selection = list(fav_products)
+        
+        # Optional: If you want the dropdown to ONLY show favorites when checked:
+        # options_list = sorted(list(fav_products))
+        # But keeping all options is usually safer so you can add others if needed.
+        options_list = all_products
     else:
         default_selection = all_products[:5]
+        options_list = all_products
 
-    selected_products = st.sidebar.multiselect("Select Products", all_products, default=default_selection)
+    selected_products = st.sidebar.multiselect("Select Products", options_list, default=default_selection)
 
     # Apply Product Filter
     if selected_products:
@@ -73,18 +85,22 @@ else:
     with tab1:
         st.subheader(f"Inventory History: {selected_site}")
         
-        chart = alt.Chart(filtered_df).mark_line(point=True).encode(
-            x=alt.X('timestamp:T', title='Date & Time', axis=alt.Axis(format='%b %d %H:%M')),
-            y=alt.Y('stock_count:Q', title='Stock Level'),
-            color='product_name:N',
-            tooltip=[
-                alt.Tooltip('timestamp', title='Time', format='%b %d %H:%M'),
-                alt.Tooltip('product_name', title='Product'),
-                alt.Tooltip('stock_count', title='Stock')
-            ]
-        ).interactive()
-        
-        st.altair_chart(chart, use_container_width=True)
+        if not filtered_df.empty:
+            chart = alt.Chart(filtered_df).mark_line(point=True).encode(
+                x=alt.X('timestamp:T', title='Date & Time', axis=alt.Axis(format='%b %d %H:%M')),
+                y=alt.Y('stock_count:Q', title='Stock Level'),
+                color='product_name:N',
+                tooltip=[
+                    alt.Tooltip('timestamp', title='Time', format='%b %d %H:%M'),
+                    alt.Tooltip('product_name', title='Product'),
+                    alt.Tooltip('sku', title='SKU'),
+                    alt.Tooltip('stock_count', title='Stock')
+                ]
+            ).interactive()
+            
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.info("No matching products found for this site.")
 
     # --- TAB 2: MOVERS (DAILY CHANGES) ---
     with tab2:
@@ -101,6 +117,9 @@ else:
             p_data = site_df[site_df['product_name'] == product]
             if p_data.empty: continue
             
+            # Get latest SKU for reference
+            current_sku = p_data.iloc[-1]['sku']
+
             # Get latest stock
             current_stock = p_data.iloc[-1]['stock_count']
             
@@ -115,10 +134,17 @@ else:
             change_24h = current_stock - stock_24h
             change_7d = current_stock - stock_7d
             
-            # Only add to list if selected (or all if none selected)
-            if not selected_products or product in selected_products:
+            # Filter Logic for Table:
+            # If Favorites is checked, ONLY show rows matching the Favorite SKUs
+            is_fav = str(current_sku) in FAVORITE_SKUS
+            
+            # Display if: (Favorites OFF AND Selected) OR (Favorites ON AND is_fav)
+            if (not show_favs and (not selected_products or product in selected_products)) or \
+               (show_favs and is_fav):
+                
                 report_data.append({
                     "Product": product,
+                    "SKU": current_sku,
                     "Current Stock": current_stock,
                     "24h Change": int(change_24h),
                     "7d Change": int(change_7d)
@@ -127,13 +153,10 @@ else:
         change_df = pd.DataFrame(report_data)
         
         if not change_df.empty:
-            # Sort by biggest absolute change in 24h
             change_df = change_df.sort_values("24h Change", ascending=True)
-            
-            # Use standard dataframe (No styling to prevent crash)
             st.dataframe(change_df, use_container_width=True)
         else:
-            st.info("Not enough data history to calculate changes yet.")
+            st.info("No data to display.")
 
     # --- TAB 3: RAW DATA ---
     with tab3:
